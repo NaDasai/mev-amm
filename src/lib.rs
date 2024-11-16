@@ -9,6 +9,7 @@ mod erc20;
 use stylus_sdk::{ alloy_primitives::{ Address, U256 }, msg, contract, call::RawCall, prelude::* };
 use crate::erc20::{ Erc20, Erc20Params, Erc20Error };
 use alloy_primitives::Uint;
+use crate::constant::get_oracle;
 
 sol_interface! {
     interface IERC20 {
@@ -112,57 +113,255 @@ impl AMM {
         Ok((amount0, amount1))
     }
 
-    pub fn swap(
+    pub fn swap_exact_amount_in(
         &mut self,
-        amount0_out: U256,
-        amount1_out: U256,
-        to: Address,
-        data: Vec<u8>
-    ) -> Result<(), Vec<u8>> {
-        if amount0_out == U256::ZERO || amount1_out == U256::ZERO {
-            return Err("INSUFFICIENT_OUTPUT_AMOUNT".into());
+        token_in: Address,
+        token_amount_in: U256,
+        token_out: Address,
+        min_amount_out: U256,
+        oracle_name: &str, // Oracle name for fetching max_price
+    ) -> Result<(U256, U256), Vec<u8>> {
+        // Ensure the tokens are bound
+        if !self.records[token_in].bound || !self.records[token_out].bound {
+            return Err(b"BPool_TokenNotBound".to_vec());
         }
-        let (_reserve0, _reserve1) = self.get_reserves();
-        if amount0_out >= _reserve0 || amount1_out >= _reserve1 {
-            return Err("INSUFFICIENT_LIQUIDITY".into());
+    
+        let in_record = &mut self.records[token_in];
+        let out_record = &mut self.records[token_out];
+    
+        let token_in_balance = IERC20::new(token_in).balance_of(self_address())?;
+        let token_out_balance = IERC20::new(token_out).balance_of(self_address())?;
+    
+        // Validate input amount ratio
+        if token_amount_in > bmul(token_in_balance, MAX_IN_RATIO) {
+            return Err(b"BPool_TokenAmountInAboveMaxRatio".to_vec());
         }
-
-        let token0 = IERC20::new(self.token0.get());
-        let token1 = IERC20::new(self.token1.get());
-        if amount0_out > U256::ZERO {
-            self.safe_transfer(self.token0.get(), to, amount0_out)?;
+    
+        // Fetch `max_price` from the oracle
+        let max_price = OracleReader::fetch_price(oracle_name)?;
+    
+        // Calculate the spot price before the swap
+        let spot_price_before = calc_spot_price(
+            token_in_balance,
+            in_record.denorm,
+            token_out_balance,
+            out_record.denorm,
+            self.swap_fee,
+        );
+    
+        // Ensure the spot price does not exceed the maximum price
+        if spot_price_before > max_price {
+            return Err(b"BPool_SpotPriceAboveMaxPrice".to_vec());
         }
-        if amount1_out > U256::ZERO {
-            self.safe_transfer(self.token1.get(), to, amount1_out)?;
+    
+        // Calculate the amount of `token_out` to be received
+        let token_amount_out = calc_out_given_in(
+            token_in_balance,
+            in_record.denorm,
+            token_out_balance,
+            out_record.denorm,
+            token_amount_in,
+            self.swap_fee,
+        );
+    
+        // Ensure the output amount meets the minimum requirement
+        if token_amount_out < min_amount_out {
+            return Err(b"BPool_TokenAmountOutBelowMinOut".to_vec());
         }
-        if !data.is_empty() {
-            RawCall::new().call(to, &data)?;
+    
+        // Update balances post-swap
+        let new_token_in_balance = badd(token_in_balance, token_amount_in);
+        let new_token_out_balance = bsub(token_out_balance, token_amount_out);
+    
+        // Calculate the spot price after the swap
+        let spot_price_after = calc_spot_price(
+            new_token_in_balance,
+            in_record.denorm,
+            new_token_out_balance,
+            out_record.denorm,
+            self.swap_fee,
+        );
+    
+        // Ensure the invariant and price constraints hold
+        if spot_price_after < spot_price_before {
+            return Err(b"BPool_SpotPriceAfterBelowSpotPriceBefore".to_vec());
         }
-        let balance0 = token0.balance_of(&*self, contract::address())?;
-        let balance1 = token1.balance_of(&*self, contract::address())?;
-        let amount0_in = balance0.saturating_sub(_reserve0.saturating_sub(amount0_out));
-        let amount1_in = balance1.saturating_sub(_reserve1.saturating_sub(amount1_out));
-        if amount0_in == U256::ZERO && amount1_in == U256::ZERO {
-            return Err("INSUFFICIENT_INPUT_AMOUNT".into());
+        if spot_price_after > max_price {
+            return Err(b"BPool_SpotPriceAboveMaxPrice".to_vec());
         }
-        let balance0_adjusted = balance0
-            .checked_mul(U256::from(1000))
-            .unwrap()
-            .checked_sub(amount0_in.checked_mul(U256::from(3)).unwrap())
-            .ok_or("balance0Adjusted underflow")?;
-        let balance1_adjusted = balance1
-            .checked_mul(U256::from(1000))
-            .unwrap()
-            .checked_sub(amount1_in.checked_mul(U256::from(3)).unwrap())
-            .ok_or("balance1Adjusted underflow")?;
-        let k = _reserve0.checked_mul(_reserve1).unwrap().checked_mul(U256::from(1000)).unwrap();
-        if balance0_adjusted.checked_mul(balance1_adjusted).unwrap() < k {
-            return Err("K".into());
+        if spot_price_before > bdiv(token_amount_in, token_amount_out) {
+            return Err(b"BPool_SpotPriceBeforeAboveTokenRatio".to_vec());
         }
-        self.update(balance0, balance1, _reserve0, _reserve1);
-
-        Ok(())
+    
+        // Emit a swap log event
+        self.emit_log(
+            b"LOG_SWAP",
+            vec![
+                abi_encode(msg_sender()),
+                abi_encode(token_in),
+                abi_encode(token_out),
+                abi_encode(token_amount_in),
+                abi_encode(token_amount_out),
+            ],
+        );
+    
+        // Perform the underlying transfers
+        self.pull_underlying(token_in, msg_sender(), token_amount_in)?;
+        self.push_underlying(token_out, msg_sender(), token_amount_out)?;
+    
+        Ok((token_amount_out, spot_price_after))
     }
+
+    pub fn swap_exact_amount_out(
+        &mut self,
+        token_in: Address,
+        max_amount_in: U256,
+        token_out: Address,
+        token_amount_out: U256,
+        oracle_name: &str, // Oracle name to fetch maxPrice
+    ) -> Result<(U256, U256), Vec<u8>> {
+        // Ensure both tokens are bound in the pool
+        if !self.records[token_in].bound || !self.records[token_out].bound {
+            return Err(b"BPool_TokenNotBound".to_vec());
+        }
+    
+        let in_record = &mut self.records[token_in];
+        let out_record = &mut self.records[token_out];
+    
+        let token_in_balance = IERC20::new(token_in).balance_of(self_address())?;
+        let token_out_balance = IERC20::new(token_out).balance_of(self_address())?;
+    
+        // Validate output amount ratio
+        if token_amount_out > bmul(token_out_balance, MAX_OUT_RATIO) {
+            return Err(b"BPool_TokenAmountOutAboveMaxOut".to_vec());
+        }
+    
+        // Fetch `max_price` from the oracle
+        let max_price = OracleReader::fetch_price(oracle_name)?;
+    
+        // Calculate the spot price before the swap
+        let spot_price_before = calc_spot_price(
+            token_in_balance,
+            in_record.denorm,
+            token_out_balance,
+            out_record.denorm,
+            self.swap_fee,
+        );
+    
+        // Ensure the spot price does not exceed the maximum price
+        if spot_price_before > max_price {
+            return Err(b"BPool_SpotPriceAboveMaxPrice".to_vec());
+        }
+    
+        // Calculate the amount of `token_in` needed for the specified `token_out`
+        let token_amount_in = calc_in_given_out(
+            token_in_balance,
+            in_record.denorm,
+            token_out_balance,
+            out_record.denorm,
+            token_amount_out,
+            self.swap_fee,
+        );
+    
+        // Ensure the input amount is within the maximum allowable amount
+        if token_amount_in > max_amount_in {
+            return Err(b"BPool_TokenAmountInAboveMaxAmountIn".to_vec());
+        }
+    
+        // Update balances after the swap
+        let new_token_in_balance = badd(token_in_balance, token_amount_in);
+        let new_token_out_balance = bsub(token_out_balance, token_amount_out);
+    
+        // Calculate the spot price after the swap
+        let spot_price_after = calc_spot_price(
+            new_token_in_balance,
+            in_record.denorm,
+            new_token_out_balance,
+            out_record.denorm,
+            self.swap_fee,
+        );
+    
+        // Ensure the invariant and price constraints hold
+        if spot_price_after < spot_price_before {
+            return Err(b"BPool_SpotPriceAfterBelowSpotPriceBefore".to_vec());
+        }
+        if spot_price_after > max_price {
+            return Err(b"BPool_SpotPriceAboveMaxPrice".to_vec());
+        }
+        if spot_price_before > bdiv(token_amount_in, token_amount_out) {
+            return Err(b"BPool_SpotPriceBeforeAboveTokenRatio".to_vec());
+        }
+    
+        // Emit a swap log event
+        self.emit_log(
+            b"LOG_SWAP",
+            vec![
+                abi_encode(msg_sender()),
+                abi_encode(token_in),
+                abi_encode(token_out),
+                abi_encode(token_amount_in),
+                abi_encode(token_amount_out),
+            ],
+        );
+    
+        // Perform the underlying transfers
+        self.pull_underlying(token_in, msg_sender(), token_amount_in)?;
+        self.push_underlying(token_out, msg_sender(), token_amount_out)?;
+    
+        Ok((token_amount_in, spot_price_after))
+    }
+
+    // pub fn swap(
+    //     &mut self,
+    //     amount0_out: U256,
+    //     amount1_out: U256,
+    //     to: Address,
+    //     data: Vec<u8>
+    // ) -> Result<(), Vec<u8>> {
+    //     if amount0_out == U256::ZERO || amount1_out == U256::ZERO {
+    //         return Err("INSUFFICIENT_OUTPUT_AMOUNT".into());
+    //     }
+    //     let (_reserve0, _reserve1) = self.get_reserves();
+    //     if amount0_out >= _reserve0 || amount1_out >= _reserve1 {
+    //         return Err("INSUFFICIENT_LIQUIDITY".into());
+    //     }
+
+    //     let token0 = IERC20::new(self.token0.get());
+    //     let token1 = IERC20::new(self.token1.get());
+    //     if amount0_out > U256::ZERO {
+    //         self.safe_transfer(self.token0.get(), to, amount0_out)?;
+    //     }
+    //     if amount1_out > U256::ZERO {
+    //         self.safe_transfer(self.token1.get(), to, amount1_out)?;
+    //     }
+    //     if !data.is_empty() {
+    //         RawCall::new().call(to, &data)?;
+    //     }
+    //     let balance0 = token0.balance_of(&*self, contract::address())?;
+    //     let balance1 = token1.balance_of(&*self, contract::address())?;
+    //     let amount0_in = balance0.saturating_sub(_reserve0.saturating_sub(amount0_out));
+    //     let amount1_in = balance1.saturating_sub(_reserve1.saturating_sub(amount1_out));
+    //     if amount0_in == U256::ZERO && amount1_in == U256::ZERO {
+    //         return Err("INSUFFICIENT_INPUT_AMOUNT".into());
+    //     }
+    //     let balance0_adjusted = balance0
+    //         .checked_mul(U256::from(1000))
+    //         .unwrap()
+    //         .checked_sub(amount0_in.checked_mul(U256::from(3)).unwrap())
+    //         .ok_or("balance0Adjusted underflow")?;
+    //     let balance1_adjusted = balance1
+    //         .checked_mul(U256::from(1000))
+    //         .unwrap()
+    //         .checked_sub(amount1_in.checked_mul(U256::from(3)).unwrap())
+    //         .ok_or("balance1Adjusted underflow")?;
+    //     let k = _reserve0.checked_mul(_reserve1).unwrap().checked_mul(U256::from(1000)).unwrap();
+    //     if balance0_adjusted.checked_mul(balance1_adjusted).unwrap() < k {
+    //         return Err("K".into());
+    //     }
+    //     self.update(balance0, balance1, _reserve0, _reserve1);
+
+    //     Ok(())
+    // }
 
     /// Mints tokens
     pub fn mint(&mut self, value: U256) -> Result<(), Erc20Error> {

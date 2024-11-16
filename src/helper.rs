@@ -89,7 +89,6 @@ impl Contract {
             call_data: IBCoWPool::commit(order_commitment)?,
         }];
 
-        // NOTE: In Stylus, empty vectors must be explicitly defined
         let post_interactions: Vec<Interaction> = vec![];
 
         Ok((order, pre_interactions, post_interactions, encode_signature(pool, &order)))
