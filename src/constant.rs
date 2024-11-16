@@ -15,6 +15,10 @@ pub const BTC_ORACLE: &str = "0x898D1aB819a24880F636416df7D1493C94143262";
 pub const ETH_ORACLE: &str = "0x898D1aB819a24880F636416df7D1493C94143262";
 pub const GYD_ORACLE: &str = "0x88Ee016dadDCa8061bf6D566585dF6c8aBfED7bb";
 
+// Adding more constants
+const TOKEN_WEIGHT: u256 = 1e18;
+const SWAP_FEE: u256 = 0;
+
 /// Retrieve an oracle address by name
 pub fn get_oracle(oracle_name: &str) -> Result<Address, Vec<u8>> {
     match oracle_name {
