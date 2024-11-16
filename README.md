@@ -16,12 +16,9 @@ Liquidity providers expect their tokens to earn yield, but the dirty little secr
 
 MEV AMM eliminates LVR once and for all by using a solver to send surplus to LPs.
 
-1.
-Liquidity providers deposit tokens into protected MEV AMM liquidity pools, where traders can access the liquidity.
-2.
-Solver rebalance MEV AMM pools whenever there is an arbitrage opportunity.
-3.
-MEV AMM eliminates LVR by capturing arbitrage value for LPs and shielding it from MEV bots.
+1/ Liquidity providers deposit tokens into protected MEV AMM liquidity pools, where traders can access the liquidity.
+2/ Solver rebalance MEV AMM pools whenever there is an arbitrage opportunity.
+3/ MEV AMM eliminates LVR by capturing arbitrage value for LPs and shielding it from MEV bots.
 
 ## Provide liquidity for your token without getting rekt
 
