@@ -46,6 +46,9 @@ sol_storage! {
 #[public]
 impl AMM {
     pub fn initialize(&mut self, token0: Address, token1: Address) -> Result<(), Vec<u8>> {
+        if token0 == token1 {
+            return Err("Tokens must be different".into());
+        }
         if self.factory.get() != Address::ZERO {
             return Err("Already initialized".into());
         }
@@ -215,10 +218,10 @@ impl AMM {
     pub fn price(&self) -> U256 {
         let (_reserve0, _reserve1) = self.get_reserves();
 
-        if _reserve0 == U256::ZERO {
-            return U256::ZERO;
+        match _reserve1.checked_div(_reserve0) {
+            Some(price) => price,
+            None => U256::ZERO,
         }
-        _reserve1 / _reserve0
     }
 
     fn min(&self, x: U256, y: U256) -> U256 {
