@@ -3,14 +3,14 @@
 The first MEV-capturing AMM in Arbitrum using Stylus programs in Rust using the [stylus-sdk](https://github.com/OffchainLabs/stylus-sdk-rs).
 
 MEV AMM protects LPs from LVR so they can provide liquidity with less risk and more return.
-MEV LPs don't have to worry about Lvr, witch costs CF-AMM LPs 5%-7% of their liquidity, on average.
+MEV LPs don't have to worry about LVR, witch costs CF-AMM LPs 5%-7% of their liquidity, on average.
 
 P.S.
 This project is inspired by CoW AMM, but unlike them, the solver operates entirely on-chain. This is made possible by Stylus, which enables us to perform extensive computations directly within our smart contracts. Stylus leverages WebAssembly (Wasm) to unlock greater computational capabilities, enhancing the efficiency and flexibility of on-chain operations.
 
 ## AMMs don't want you to know about LVR
 
-Liquidity providers expect their tokens to earn yield, but the dirty little secret of AMMs is that most liquidity pools lose money. In fact, hundreds of millions of dollars of LP funds are stolen by arbitrageurs every year. These losses are known as loss-versus-rebalancing (LVR). LVR is a bigger source of MEV than frontrunning and sandwich attacks combined.
+Liquidity providers expect their tokens to earn yield, but most liquidity pools lose money. In fact, hundreds of millions of dollars of LP funds are stolen by arbitrageurs every year. These losses are known as loss-versus-rebalancing (LVR). LVR is a bigger source of MEV than frontrunning and sandwich attacks combined.
 
 ## Finally, an AMM designed with LPs in mind
 
