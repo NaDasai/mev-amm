@@ -212,6 +212,15 @@ impl AMM {
         (U256::from(self.reserve0.get()), U256::from(self.reserve1.get()))
     }
 
+    pub fn price(&self) -> U256 {
+        let (_reserve0, _reserve1) = self.get_reserves();
+
+        if _reserve0 == U256::ZERO {
+            return U256::ZERO;
+        }
+        _reserve1 / _reserve0
+    }
+
     fn min(&self, x: U256, y: U256) -> U256 {
         if x < y { x } else { y }
     }
